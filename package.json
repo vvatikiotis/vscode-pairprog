@@ -11,17 +11,35 @@
         "Other"
     ],
     "activationEvents": [
-        "onCommand:extension.connect"
+        "onCommand:extension.connect",
+        "onCommand:extension.startServer"
     ],
     "contributes": {
-        "commands": [{
-            "command": "extension.connect",
-            "title": "Connect to PairProg server"
-        }]
+        "commands": [
+            {
+                "command": "extension.startServer",
+                "title": "PairProg: Start server"
+            },
+            {
+                "command": "extension.startSession",
+                "title": "PairProg: Start pair session"
+            },
+            {
+                "command": "extension.connect",
+                "title": "PairProg: Connect to session"
+            }
+        ],
+        "menus": {
+            "editor/context": [
+                {
+                    "command": "extension.startSession",
+                    "when": "editorTextFocus",
+                    "group": "pairProg"
+                }
+            ]
+        }
     },
-
     "main": "./out/src/extension",
-
     "scripts": {
         "vscode:prepublish": "tsc -p ./",
         "compile": "tsc -watch -p ./",
@@ -34,5 +52,17 @@
         "mocha": "^2.3.3",
         "@types/node": "^6.0.40",
         "@types/mocha": "^2.2.32"
+    },
+    "dependencies": {
+        "debug": "^3.0.1",
+        "gulf": "^5.0.3",
+        "koa": "^2.3.0",
+        "koa-bodyparser": "^4.2.0",
+        "koa-router": "^7.2.1",
+        "node-fetch": "^1.7.3",
+        "ot-text": "^1.0.1",
+        "ramda": "^0.24.1",
+        "ramda-adjunct": "^1.15.0",
+        "uuid": "^3.1.0"
     }
 }

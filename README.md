@@ -39,14 +39,6 @@ Users appreciate release notes as you update your extension.
 
 Initial release of ...
 
-### 1.0.1
-
-Fixed issue #.
-
-### 1.1.0
-
-Added features X, Y, and Z.
-
 -----------------------------------------------------------------------------------------------------------
 
 ## Working with Markdown

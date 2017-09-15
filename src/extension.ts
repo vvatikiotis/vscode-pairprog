@@ -1,7 +1,12 @@
 import * as vscode from 'vscode';
-const gulf = require('gulf')
-import { type as textOT } from 'ot-text'
-const net = require('net')
+
+const ShareDB = require('sharedb')
+const ShareDBClient = require('sharedb/lib/client')
+const ShareDBLogger = require('sharedb-logger')
+const WS = require('ws')
+// const WebSocketJSONStream = require('./utils/ws-json-stream')
+import WebSocketJSONStream from './utils/ws-json-stream'
+
 const http = require('http')
 const Koa = require('koa')
 const Router = require('koa-router')
@@ -38,24 +43,11 @@ const listSessionsByProps = (...args) => compose(
   const sessionServerUrl = `http://localhost:${sessionServerPort}`
   setup('')
 
-
-
+  const wsPort = 3001
 // this method is called when your extension is activated
 // your extension is activated the very first time the command is executed
 export function activate(context: vscode.ExtensionContext) {
     const { window, workspace, TextEdit, Position, Range } = vscode    
-
-    const masterDoc = new gulf.Document({
-        storageAdapter: new gulf.MemoryAdapter,
-        ottype: textOT,
-    })
-    masterDoc.initializeFromStorage('')
-
-    const commitHandler = (edit, ownEdit) => {
-        console.log(`server :: edit: ${JSON.stringify(edit)}, ownEdit: ${ownEdit}`)
-        console.log(`doc content: ${masterDoc.content}`)
-    }
-    masterDoc.on('commit', commitHandler)
 
     // Koa
     const app = new Koa()
@@ -81,40 +73,94 @@ export function activate(context: vscode.ExtensionContext) {
     app.use(router.routes())
 
 
+    let shareDB
+    let shareDBLogger
+
     // start server
     const disposableStartServer = vscode.commands.registerCommand('extension.startServer', () => {
         const cb = tap(_ => console.log(`Session server listening at ${sessionServerPort}`), app.callback())
-        http.createServer(cb).listen(sessionServerPort)        
+        const server = http.createServer(cb)
+        
+        shareDB = new ShareDB()
+        shareDBLogger = new ShareDBLogger(shareDB)
+        const wss = new WS.Server({ server })
+        wss.on('connection', (ws, req) => {
+            console.log(`client connected`);
+            const stream = new WebSocketJSONStream(ws)
+            shareDB.listen(stream)
+        })
+        wss.on('close', (ws, req) => console.log(`client disconnected`))
+
+        server.listen(sessionServerPort)
     })
 
     const disposableStartSession = vscode.commands.registerCommand('extension.startSession', () => {
         const sessionId = uuidv4()
         create(`${sessionServerUrl}/session`, { id: sessionId, name: 'Session name'}, null)
-            .then(session => console.log(`session: ${session.id}, ${session.name}`))
+            .then(session => {
+                const editor = window.activeTextEditor
+                if (typeof editor === "undefined") {
+                    console.log('no active editor');
+                    return false
+                }
+
+                console.log(`session: ${session.id}, ${session.name}`)
+                const ws = new WS(`ws://localhost:3000`)
+                const sharedbConnection = new ShareDBClient.Connection(ws)
+                const doc = sharedbConnection.get('First_collection', 'my_doc')
+                doc.create(editor.document.getText())
+                doc.subscribe((err) => {
+                    if (err) {
+                        console.log(`error ${err}`)
+                        return false
+                    }
+
+                    if (!doc.data) { // does not exist so we create the document and replace the code editor content by the document content
+                        doc.create(editor.document.getText());
+                    } else { // it exist, we set the code editor content to the latest document snapshot
+                        editor.edit(editBuilder => editBuilder.insert(new Position(0,0), doc.data))
+                    }
+                 
+                    // we listen to the "op" event which will fire when a change in content (an operation) is applied to the document, "source" argument determinate the origin which can be local or remote (false)
+                    doc.on('op', function(op, source) {
+                        var i = 0, j = 0,
+                            from,
+                            to,
+                            operation,
+                            o;
+                         
+                        if (source === false) { // we integrate the operation if it come from the server
+                            for (i = 0; i < op.length; i += 1) {
+                                operation = op[i];
+                                 
+                                for (j = 0; j < operation.o.length; j += 1) {
+                                    o = operation.o[j];
+                                     
+                                    if (o["d"]) { // delete operation
+                                        from = code_editor.posFromIndex(o.p);
+                                        to = code_editor.posFromIndex(o.p + o.d.length);
+                                        code_editor.replaceRange("", from, to, "remote");
+                                    } else if (o["i"]) { // insert operation
+                                        from = code_editor.posFromIndex(o.p);
+                                        code_editor.replaceRange(o.i, from, from, "remote");
+                                    } else {
+                                        console.log("Unknown type of operation.")
+                                    }
+                                }
+                            }
+                        }
+                    });
+                     
+                    const sharedb_doc_ready = true; // th
+                })
+
+        
+            })
             .catch(err => console.log(`error ${err}`))
         
-        // const otConnHandler = (socket) => {
-        //     console.log('Server :: New connection')
-
-        //     const sessionId = uuidv4()
-            
-        //     const slave = masterDoc.slaveLink()
-
-        //     socket.on('pipe', (src) => console.log(`Pipping to server`))
-        //     socket.on('error', (err) => console.log('error'))          
-
-        //     socket.pipe(slave).pipe(socket)
-        // }
-
-        // const otServer = net.createServer(otConnHandler)
-        // otServer.listen(8080, () => {
-        //     console.log('Starting Gulf server')
-        // })
-
     })
 
 
-    let master = true
     // connect to server
     var disposableConnect = vscode.commands.registerCommand('extension.connect', () => {
         const activeSessions = read(`${sessionServerUrl}/sessions`, null).catch(err => console.log('error: ', err))
@@ -144,49 +190,6 @@ export function activate(context: vscode.ExtensionContext) {
             console.log(`document changes: `, evt)
         })
 
-        const doc = new gulf.EditableDocument({
-            storageAdapter: new gulf.MemoryAdapter,
-            ottype: textOT,
-        })
-            
-        let content
-        
-        doc._onBeforeChange = function() {
-            console.log('onBeforeChange')
-            return Promise.resolve()
-        }
-        
-        doc._onChange = function(cs) {
-            console.log(`onChange cs: ${cs}`)
-            
-            content = textOT.apply(content, cs)
-            console.log(`onChange content: ${content}`)
-            
-            return Promise.resolve()
-        }
-        
-        doc._setContent = function(newcontent) {
-            console.log(`setContent: ${newcontent}`)
-            content = newcontent
-            return Promise.resolve()
-        }
-        
-        const commitHandler = (edit, ownEdit) => {
-            console.log(`client :: edit: ${JSON.stringify(edit)}, ownEdit: ${ownEdit}`)
-            console.log(`doc content: ${doc.content}`)
-        }
-
-        // const socket = net.connect(8080, function() {
-        //     console.log('Client :: connect!');
-        //     const master = doc.masterLink()
-        //     doc.on('commit', commitHandler)
-        //     socket.on('pipe', (src) => console.log(`Pipping to client`))
-          
-        //     socket.pipe(master).pipe(socket)
-        //     const initialText = textEditor.document.getText()
-        //     console.log(`Client :: connect :: initialText: ${initialText}`)
-        //     setTimeout(() => doc.submitChange([1, initialText]), 1000)
-        // })
     
         // vscode.window.showInformationMessage('Connecting');
     });

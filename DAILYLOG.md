@@ -10,3 +10,7 @@ Each client listens for changes in the master document and changes its content a
 - Need an additional http endpoint for session identification and management. I'll use Koa.
 - Koa simple server is ready. Setup during extension activation and starts listening
 when 'Start server' executes
+
+## 15 Sept
+
+- Spike using ShareDB. Better documented, more mature, more people than Gulf

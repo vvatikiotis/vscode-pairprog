@@ -4,7 +4,6 @@ const ShareDB = require('sharedb')
 const ShareDBClient = require('sharedb/lib/client')
 const ShareDBLogger = require('sharedb-logger')
 const WS = require('ws')
-// const WebSocketJSONStream = require('./utils/ws-json-stream')
 import WebSocketJSONStream from './utils/ws-json-stream'
 
 const http = require('http')
@@ -33,7 +32,7 @@ type SessionDBType = {
 }
 const sessions: SessionDBType = {}
 
-const listSessionsByProps = (...args) => compose(
+const getSessionsByProps = (...args) => compose(
     map(o => compose(join(': '), values, pick([...args]))(o)),
     pluck(1),
     toPairs
@@ -60,7 +59,7 @@ export function activate(context: vscode.ExtensionContext) {
     router.get('/sessions', (ctx, next) => {
         const { request, response } = ctx
         response.type = 'application/json'
-        response.body = listSessionsByProps('id', 'name')(sessions)
+        response.body = getSessionsByProps('id', 'name')(sessions)
     })
     router.post('/session', (ctx, next) => {
         const { request, response } = ctx
@@ -104,11 +103,20 @@ export function activate(context: vscode.ExtensionContext) {
                     return false
                 }
 
+                workspace.onDidChangeTextDocument((evt) => {
+                    // const { contentChanges } = evt
+                    const { text } =  evt.contentChanges[0]
+                    const { start, end } = evt.contentChanges[0].range
+                    console.log(`document changes: ${start.line}:${start.character} -> ${end.line}:${end.character}, text: ${JSON.stringify(text)}`)
+
+                    const op = { p: [], t: "text0", o: [] }
+                })
+        
+
                 console.log(`session: ${session.id}, ${session.name}`)
                 const ws = new WS(`ws://localhost:3000`)
                 const sharedbConnection = new ShareDBClient.Connection(ws)
                 const doc = sharedbConnection.get('First_collection', 'my_doc')
-                doc.create(editor.document.getText())
                 doc.subscribe((err) => {
                     if (err) {
                         console.log(`error ${err}`)
@@ -118,7 +126,7 @@ export function activate(context: vscode.ExtensionContext) {
                     if (!doc.data) { // does not exist so we create the document and replace the code editor content by the document content
                         doc.create(editor.document.getText());
                     } else { // it exist, we set the code editor content to the latest document snapshot
-                        editor.edit(editBuilder => editBuilder.insert(new Position(0,0), doc.data))
+                        editor.edit(editBuilder => editBuilder.replace(new Position(0,0), doc.data))
                     }
                  
                     // we listen to the "op" event which will fire when a change in content (an operation) is applied to the document, "source" argument determinate the origin which can be local or remote (false)
@@ -157,7 +165,6 @@ export function activate(context: vscode.ExtensionContext) {
         
             })
             .catch(err => console.log(`error ${err}`))
-        
     })
 
 
@@ -172,7 +179,7 @@ export function activate(context: vscode.ExtensionContext) {
             return false
         }
 
-        vscode.window.onDidChangeActiveTextEditor(()=> {
+        vscode.window.onDidChangeActiveTextEditor(() => {
             console.log('active editor changed')
         })
 
@@ -187,10 +194,63 @@ export function activate(context: vscode.ExtensionContext) {
 
         vscode.workspace.onDidChangeTextDocument((evt) => {
             const { contentChanges } = evt
-            console.log(`document changes: `, evt)
+            console.log(`document changes: `, contentChanges)
+
         })
 
-    
+        CodeMirror.on(code_editor, 'changes', function (instance, changes) {
+            var op, change, start_pos, chars, i = 0, j = 0;
+         
+            if (!sharedb_doc_ready) { // if the document is not ready, we just ignore all changes, a much better way to handle this would be to call the function again with the same changes at regular intervals until the document is ready (or just cancel everything if the document will never be ready due to errors or something else)
+                return;
+            }
+         
+            op = {
+                p: [],
+                t: "text0",
+                o: []
+            };
+         
+            // we must do it in order (this avoid issue with same-time op)
+            changes.reverse();
+         
+            for (i = 0; i < changes.length; i += 1) {
+                change = changes[i];
+                start_pos = 0;
+                j = 0;
+         
+                if (change.origin === "remote") { // do not submit back things pushed by remotes... ignore all "remote" origins
+                    continue;
+                }
+         
+                while (j < change.from.line) {
+                    start_pos += code_editor.lineInfo(j).text.length + 1;
+                    j += 1;
+                }
+         
+                start_pos += change.from.ch;
+         
+                if (change.to.line != change.from.line || change.to.ch != change.from.ch) {
+                    chars = "";
+         
+                    for (j = 0; j < change.removed.length; j += 1) { 
+                        chars += change.removed[j]; 
+                        if (j !== (change.removed.length - 1)) { 
+                            chars += "\n"; 
+                        } 
+                    } 
+                    op.o.push({ p: start_pos, d: chars }); 
+                } 
+                if (change.text) { 
+                    op.o.push({ p: start_pos, i: change.text.join('\n') }); 
+                } 
+            } 
+            
+            if (op.o.length > 0) {
+                sharedb_doc.submitOp(op);
+            }
+        });
+
         // vscode.window.showInformationMessage('Connecting');
     });
 

@@ -81,7 +81,7 @@ export function activate(context: vscode.ExtensionContext) {
         const server = http.createServer(cb)
         
         shareDB = new ShareDB()
-        shareDBLogger = new ShareDBLogger(shareDB)
+        shareDBLogger = ShareDBLogger(shareDB)
         const wss = new WS.Server({ server })
         wss.on('connection', (ws, req) => {
             console.log(`client connected`);
@@ -102,16 +102,6 @@ export function activate(context: vscode.ExtensionContext) {
                     console.log('no active editor');
                     return false
                 }
-
-                workspace.onDidChangeTextDocument((evt) => {
-                    // const { contentChanges } = evt
-                    const { text } =  evt.contentChanges[0]
-                    const { start, end } = evt.contentChanges[0].range
-                    console.log(`document changes: ${start.line}:${start.character} -> ${end.line}:${end.character}, text: ${JSON.stringify(text)}`)
-
-                    const op = { p: [], t: "text0", o: [] }
-                })
-        
 
                 console.log(`session: ${session.id}, ${session.name}`)
                 const ws = new WS(`ws://localhost:3000`)
@@ -145,12 +135,17 @@ export function activate(context: vscode.ExtensionContext) {
                                     o = operation.o[j];
                                      
                                     if (o["d"]) { // delete operation
-                                        from = code_editor.posFromIndex(o.p);
-                                        to = code_editor.posFromIndex(o.p + o.d.length);
-                                        code_editor.replaceRange("", from, to, "remote");
+                                        console.log('delete op');
+                                        // from = code_editor.posFromIndex(o.p);
+                                        // to = code_editor.posFromIndex(o.p + o.d.length);
+                                        // code_editor.replaceRange("", from, to, "remote");
                                     } else if (o["i"]) { // insert operation
-                                        from = code_editor.posFromIndex(o.p);
-                                        code_editor.replaceRange(o.i, from, from, "remote");
+                                        console.log('insert op');
+                                        const editPosition = editor.document.positionAt(o.p)
+                                        console.log(`${editor.document.fileName}`);
+                                        editor.edit(editBuilder => editBuilder.insert(editPosition, o.i))
+                                        // from = code_editor.posFromIndex(o.p);
+                                        // code_editor.replaceRange(o.i, from, from, "remote");
                                     } else {
                                         console.log("Unknown type of operation.")
                                     }
@@ -162,6 +157,18 @@ export function activate(context: vscode.ExtensionContext) {
                     const sharedb_doc_ready = true; // th
                 })
 
+                workspace.onDidChangeTextDocument((evt) => {
+                    // const { contentChanges } = evt
+                    const { text } =  evt.contentChanges[0]
+                    console.log()
+                    const { start, end } = evt.contentChanges[0].range
+                    editor.document.offsetAt(start)
+                    console.log(`document changes: ${start.line}:${start.character} -> ${end.line}:${end.character}, text: ${JSON.stringify(text)}`)
+
+                    const op = { p: [], t: "text0", o: [] }
+                    if (text !== '') op.o.push({ p: editor.document.offsetAt(start), i: text })
+                    doc.submitOp(op)
+                }
         
             })
             .catch(err => console.log(`error ${err}`))
@@ -194,62 +201,15 @@ export function activate(context: vscode.ExtensionContext) {
 
         vscode.workspace.onDidChangeTextDocument((evt) => {
             const { contentChanges } = evt
-            console.log(`document changes: `, contentChanges)
+            const editor = window.activeTextEditor
+            const { text } =  evt.contentChanges[0]
+            const { start, end } = evt.contentChanges[0].range
+            editor.document.offsetAt(start)
+            console.log(`document changes: ${start.line}:${start.character} -> ${end.line}:${end.character}, text: ${JSON.stringify(text)}`)
+
+            const op = { p: [], t: "text0", o: [] }
 
         })
-
-        CodeMirror.on(code_editor, 'changes', function (instance, changes) {
-            var op, change, start_pos, chars, i = 0, j = 0;
-         
-            if (!sharedb_doc_ready) { // if the document is not ready, we just ignore all changes, a much better way to handle this would be to call the function again with the same changes at regular intervals until the document is ready (or just cancel everything if the document will never be ready due to errors or something else)
-                return;
-            }
-         
-            op = {
-                p: [],
-                t: "text0",
-                o: []
-            };
-         
-            // we must do it in order (this avoid issue with same-time op)
-            changes.reverse();
-         
-            for (i = 0; i < changes.length; i += 1) {
-                change = changes[i];
-                start_pos = 0;
-                j = 0;
-         
-                if (change.origin === "remote") { // do not submit back things pushed by remotes... ignore all "remote" origins
-                    continue;
-                }
-         
-                while (j < change.from.line) {
-                    start_pos += code_editor.lineInfo(j).text.length + 1;
-                    j += 1;
-                }
-         
-                start_pos += change.from.ch;
-         
-                if (change.to.line != change.from.line || change.to.ch != change.from.ch) {
-                    chars = "";
-         
-                    for (j = 0; j < change.removed.length; j += 1) { 
-                        chars += change.removed[j]; 
-                        if (j !== (change.removed.length - 1)) { 
-                            chars += "\n"; 
-                        } 
-                    } 
-                    op.o.push({ p: start_pos, d: chars }); 
-                } 
-                if (change.text) { 
-                    op.o.push({ p: start_pos, i: change.text.join('\n') }); 
-                } 
-            } 
-            
-            if (op.o.length > 0) {
-                sharedb_doc.submitOp(op);
-            }
-        });
 
         // vscode.window.showInformationMessage('Connecting');
     });

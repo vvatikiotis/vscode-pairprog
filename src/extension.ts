@@ -14,7 +14,7 @@ const bodyParser = require('koa-bodyparser')
 const uuidv4 = require('uuid/v4');
 
 import { setup, read, create } from './utils/xhr-helpers'
-import { 
+import {
     append, compose, map, join, values, pluck, toPairs, pick, curry, forEach, tap,
 } from 'ramda'
 
@@ -46,7 +46,7 @@ const getSessionsByProps = (...args) => compose(
 // this method is called when your extension is activated
 // your extension is activated the very first time the command is executed
 export function activate(context: vscode.ExtensionContext) {
-    const { window, workspace, TextEdit, Position, Range } = vscode    
+    const { window, workspace, TextEdit, Position, Range } = vscode
 
     // Koa
     const app = new Koa()
@@ -79,12 +79,12 @@ export function activate(context: vscode.ExtensionContext) {
     const disposableStartServer = vscode.commands.registerCommand('extension.startServer', () => {
         const cb = tap(_ => console.log(`Session server listening at ${sessionServerPort}`), app.callback())
         const server = http.createServer(cb)
-        
+
         shareDB = new ShareDB()
         shareDBLogger = ShareDBLogger(shareDB)
         const wss = new WS.Server({ server })
         wss.on('connection', (ws, req) => {
-            console.log(`client connected`);
+            console.log(`sharedb client connected`);
             const stream = new WebSocketJSONStream(ws)
             shareDB.listen(stream)
         })
@@ -93,83 +93,100 @@ export function activate(context: vscode.ExtensionContext) {
         server.listen(sessionServerPort)
     })
 
+    const handleSharing = (ident) => {
+        let fromRemote = false
+        const editor = window.activeTextEditor
+        if (typeof editor === "undefined") {
+            console.log(`${ident}: no active editor`);
+            return false
+        }
+
+        const ws = new WS(`ws://localhost:3000`)
+        const sharedbConnection = new ShareDBClient.Connection(ws)
+        const doc = sharedbConnection.get('First_collection', 'my_doc')
+        doc.subscribe((err) => {
+            if (err) {
+                console.log(`error ${err}`)
+                return false
+            }
+
+            if (!doc.data) { // does not exist so we create the document and replace the code editor content by the document content
+                console.log(`${ident}: create doc`);
+                doc.create(editor.document.getText());
+            } else { // it exist, we set the code editor content to the latest document snapshot
+                console.log(`${ident}: edit doc`);
+                editor.edit(editBuilder => editBuilder.replace(new Position(0,0), doc.data))
+                fromRemote = true
+            }
+
+            // we listen to the "op" event which will fire when a change in content (an operation) is applied to the document, "source" argument determinate the origin which can be local or remote (false)
+            doc.on('op', function(op, source) {
+                var i = 0, j = 0,
+                    from,
+                    to,
+                    operation,
+                    o;
+
+                if (source === false) { // we integrate the operation if it come from the server
+                    for (i = 0; i < op.length; i += 1) {
+                        operation = op[i];
+
+                        for (j = 0; j < operation.o.length; j += 1) {
+                            o = operation.o[j];
+
+                            if (o["d"]) { // delete operation
+                                console.log(`${ident}: doc handler :: VSC delete Op for ${editor.document.fileName}`);
+                                // from = code_editor.posFromIndex(o.p);
+                                // to = code_editor.posFromIndex(o.p + o.d.length);
+                                // code_editor.replaceRange("", from, to, "remote");
+                                fromRemote = true
+                            } else if (o["i"]) { // insert operation
+                                console.log(`${ident}: doc handler :: VSC insert Op for ${editor.document.fileName}`);
+                                const editPosition = editor.document.positionAt(o.p)
+                                editor.edit(editBuilder => editBuilder.insert(editPosition, o.i))
+                                fromRemote = true
+                                // from = code_editor.posFromIndex(o.p);
+                                // code_editor.replaceRange(o.i, from, from, "remote");
+                            } else {
+                                console.log("Unknown type of operation.")
+                            }
+                        }
+                    }
+                }
+            });
+
+            const sharedb_doc_ready = true; // th
+        })
+
+        // handles local changes only
+        workspace.onDidChangeTextDocument((evt) => {
+            const isSameDocument = editor.document.fileName === evt.document.fileName
+            if (!isSameDocument) return false
+
+            // const { contentChanges } = evt
+            const { text } =  evt.contentChanges[0]
+            console.log()
+            const { start, end } = evt.contentChanges[0].range
+            editor.document.offsetAt(start)
+            console.log(`${ident}: document changes: ${start.line}:${start.character} -> ${end.line}:${end.character}, text: ${JSON.stringify(text.slice(0,10))}`)
+
+            const op = { p: [], t: "text0", o: [] }
+            if (!fromRemote && text !== '') {
+                console.log(`${ident}: evt handler :: submitOp`);
+                op.o.push({ p: editor.document.offsetAt(start), i: text })
+                doc.submitOp(op)
+            }
+            fromRemote = false
+        })
+    }
+
     const disposableStartSession = vscode.commands.registerCommand('extension.startSession', () => {
+
         const sessionId = uuidv4()
         create(`${sessionServerUrl}/session`, { id: sessionId, name: 'Session name'}, null)
             .then(session => {
-                const editor = window.activeTextEditor
-                if (typeof editor === "undefined") {
-                    console.log('no active editor');
-                    return false
-                }
-
                 console.log(`session: ${session.id}, ${session.name}`)
-                const ws = new WS(`ws://localhost:3000`)
-                const sharedbConnection = new ShareDBClient.Connection(ws)
-                const doc = sharedbConnection.get('First_collection', 'my_doc')
-                doc.subscribe((err) => {
-                    if (err) {
-                        console.log(`error ${err}`)
-                        return false
-                    }
-
-                    if (!doc.data) { // does not exist so we create the document and replace the code editor content by the document content
-                        doc.create(editor.document.getText());
-                    } else { // it exist, we set the code editor content to the latest document snapshot
-                        editor.edit(editBuilder => editBuilder.replace(new Position(0,0), doc.data))
-                    }
-                 
-                    // we listen to the "op" event which will fire when a change in content (an operation) is applied to the document, "source" argument determinate the origin which can be local or remote (false)
-                    doc.on('op', function(op, source) {
-                        var i = 0, j = 0,
-                            from,
-                            to,
-                            operation,
-                            o;
-                         
-                        if (source === false) { // we integrate the operation if it come from the server
-                            for (i = 0; i < op.length; i += 1) {
-                                operation = op[i];
-                                 
-                                for (j = 0; j < operation.o.length; j += 1) {
-                                    o = operation.o[j];
-                                     
-                                    if (o["d"]) { // delete operation
-                                        console.log('delete op');
-                                        // from = code_editor.posFromIndex(o.p);
-                                        // to = code_editor.posFromIndex(o.p + o.d.length);
-                                        // code_editor.replaceRange("", from, to, "remote");
-                                    } else if (o["i"]) { // insert operation
-                                        console.log('insert op');
-                                        const editPosition = editor.document.positionAt(o.p)
-                                        console.log(`${editor.document.fileName}`);
-                                        editor.edit(editBuilder => editBuilder.insert(editPosition, o.i))
-                                        // from = code_editor.posFromIndex(o.p);
-                                        // code_editor.replaceRange(o.i, from, from, "remote");
-                                    } else {
-                                        console.log("Unknown type of operation.")
-                                    }
-                                }
-                            }
-                        }
-                    });
-                     
-                    const sharedb_doc_ready = true; // th
-                })
-
-                workspace.onDidChangeTextDocument((evt) => {
-                    // const { contentChanges } = evt
-                    const { text } =  evt.contentChanges[0]
-                    console.log()
-                    const { start, end } = evt.contentChanges[0].range
-                    editor.document.offsetAt(start)
-                    console.log(`document changes: ${start.line}:${start.character} -> ${end.line}:${end.character}, text: ${JSON.stringify(text)}`)
-
-                    const op = { p: [], t: "text0", o: [] }
-                    if (text !== '') op.o.push({ p: editor.document.offsetAt(start), i: text })
-                    doc.submitOp(op)
-                }
-        
+                handleSharing('master')
             })
             .catch(err => console.log(`error ${err}`))
     })
@@ -177,18 +194,18 @@ export function activate(context: vscode.ExtensionContext) {
 
     // connect to server
     var disposableConnect = vscode.commands.registerCommand('extension.connect', () => {
-        const activeSessions = read(`${sessionServerUrl}/sessions`, null).catch(err => console.log('error: ', err))
-        window.showQuickPick(activeSessions)
+        // const activeSessions = read(`${sessionServerUrl}/sessions`, null).catch(err => console.log('error: ', err))
+        // window.showQuickPick(activeSessions)
+        handleSharing('slave')
+        // const textEditor = window.activeTextEditor
+        // if (typeof textEditor === "undefined") {
+        //     console.log('no active editor');
+        //     return false
+        // }
 
-        const textEditor = window.activeTextEditor
-        if (typeof textEditor === "undefined") {
-            console.log('no active editor');
-            return false
-        }
-
-        vscode.window.onDidChangeActiveTextEditor(() => {
-            console.log('active editor changed')
-        })
+        // vscode.window.onDidChangeActiveTextEditor(() => {
+        //     console.log('active editor changed')
+        // })
 
         // vscode.window.onDidChangeTextEditorSelection(()=> {
         //     console.log('onDidChangeTextEditorSelectiona')
@@ -199,24 +216,13 @@ export function activate(context: vscode.ExtensionContext) {
         // })
         // .then(fullfilled => console.log('fulfilled'), rejected => console.log('rejected'))
 
-        vscode.workspace.onDidChangeTextDocument((evt) => {
-            const { contentChanges } = evt
-            const editor = window.activeTextEditor
-            const { text } =  evt.contentChanges[0]
-            const { start, end } = evt.contentChanges[0].range
-            editor.document.offsetAt(start)
-            console.log(`document changes: ${start.line}:${start.character} -> ${end.line}:${end.character}, text: ${JSON.stringify(text)}`)
-
-            const op = { p: [], t: "text0", o: [] }
-
-        })
 
         // vscode.window.showInformationMessage('Connecting');
     });
 
-    context.subscriptions.push(disposableStartServer);    
+    context.subscriptions.push(disposableStartServer);
 
     context.subscriptions.push(disposableStartSession)
     context.subscriptions.push(disposableConnect);
-    
+
 }

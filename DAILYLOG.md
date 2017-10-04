@@ -14,3 +14,7 @@ when 'Start server' executes
 ## 15 Sept
 
 - Spike using ShareDB. Better documented, more mature, more people than Gulf
+
+### 4 Oct
+
+Basic sync operation is functional, or so it seems to be.

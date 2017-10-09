@@ -15,18 +15,38 @@
         "onCommand:extension.startServer"
     ],
     "contributes": {
+        "views": {
+            "explorer": [
+                {
+                    "id": "treePairProgramming",
+                    "name": "Pair Programming"
+                }
+            ]
+        },
         "commands": [
             {
                 "command": "extension.startServer",
                 "title": "PairProg: Start server"
             },
             {
+                "command": "extension.stopServer",
+                "title": "PairProg: Stop server"
+            },
+            {
                 "command": "extension.startSession",
                 "title": "PairProg: Start pair session"
             },
             {
-                "command": "extension.connect",
+                "command": "extension.shareDoc",
+                "title": "PairProg: Share current document"
+            },
+            {
+                "command": "extension.connectSession",
                 "title": "PairProg: Connect to session"
+            },
+            {
+                "command": "extension.engageDoc",
+                "title": "PairProg: Engage in document"
             }
         ],
         "menus": {
@@ -62,6 +82,7 @@
         "ot-text": "^1.0.1",
         "ramda": "^0.24.1",
         "ramda-adjunct": "^1.15.0",
+        "server-destroy": "^1.0.1",
         "sharedb": "^1.0.0-beta.7",
         "sharedb-logger": "^0.1.4",
         "uuid": "^3.1.0",

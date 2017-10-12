@@ -18,3 +18,7 @@ when 'Start server' executes
 ### 4 Oct
 
 Basic sync operation is functional, or so it seems to be.
+
+### 10, 11, 12 Oct
+
+Session management. Single session only.

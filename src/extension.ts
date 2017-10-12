@@ -1,4 +1,5 @@
 import * as vscode from 'vscode'
+import { StatusBarItem, window, commands } from 'vscode'
 
 import ShareDB = require('sharedb')
 import ShareDBClient = require('sharedb/lib/client')
@@ -13,26 +14,41 @@ import uuidv4 = require('uuid/v4')
 
 import {
     tap, merge, compose, equals, length, keys, head, isEmpty, empty, map, find,
-    split, trim,
+    split, trim, append, prop, propOr,
 } from 'ramda'
-import { setup as apiSetup, read, create } from './utils/xhr-helpers'
-
-import { SessionDBType, SessionDocumentType } from './types'
 
 import Debug from 'debug'
-const debug = Debug('server')
+const debugServer = Debug('server')
+const debug = Debug('client')
 
+// debug.log writes to stderr by default. Rebind it to console.log
+debug.log = console.log.bind(console)
+
+import { setup as apiSetup, read, create } from './utils/xhr-helpers'
+import { SessionDBType, SessionDocumentType } from './types'
+
+const { workspace, TextEdit, Position, Range } = vscode
 const sessionServerPort = 3000
 const sessionServerUrl = `localhost:${sessionServerPort}`
 apiSetup('')
 
+let isServerRunning = false
+let server = null
+let serverStatusBarItem: StatusBarItem
+let sharedDocsStatusBarItem: StatusBarItem
+
 export function activate(context: vscode.ExtensionContext) {
     let sessions: SessionDBType = {}
     let sessionDocuments: SessionDocumentType = {}
-    let isServerRunning = false
-    let server = null
 
-    const { window, workspace, TextEdit, Position, Range } = vscode
+    const disposableShowStopServerCmd = vscode.commands.registerCommand('extension.showStopServerCmd', async () => {
+        const sel = await window.showQuickPick(['PairProg: Stop server'])
+        if (sel) commands.executeCommand('extension.stopServer')
+    })
+
+    const disposableShowSharedDocs = vscode.commands.registerCommand('extension.showSharedDocs', async () => {
+        const sel = await window.showQuickPick(prop((keys(sessionDocuments)), sessionDocuments))
+    })
 
     //
     // start server
@@ -42,7 +58,7 @@ export function activate(context: vscode.ExtensionContext) {
             window.showErrorMessage('Share server is already running')
             return false
         }
-        const cb = tap(_ => console.log(`Session server listening at ${sessionServerPort}`), Koa.callback())
+        const cb = tap(_ => debugServer(`Session server listening at ${sessionServerPort}`), Koa.callback())
         server = http.createServer(cb)
         if (server) isServerRunning = true
 
@@ -50,13 +66,20 @@ export function activate(context: vscode.ExtensionContext) {
         const shareDBLogger = ShareDBLogger(shareDB)
         const wss = new WS.Server({ server })
         wss.on('connection', (ws, req) => {
-            console.log(`ShareDB client connected`)
+            debugServer(`ShareDB client connected`)
             const stream = new WebSocketJSONStream(ws)
             shareDB.listen(stream)
         })
-        wss.on('close', (ws, req) => console.log(`ShareDB client disconnected`))
+        wss.on('close', (ws, req) => debugServer(`ShareDB client disconnected`))
 
-        server.listen(sessionServerPort)
+        const onServerListening = () => {
+            serverStatusBarItem = window.createStatusBarItem(vscode.StatusBarAlignment.Left)
+            serverStatusBarItem.text = '$(server)'
+            serverStatusBarItem.tooltip = `PairProg: Server running at ${sessionServerUrl}`
+            serverStatusBarItem.command = 'extension.showStopServerCmd'
+            serverStatusBarItem.show()
+        }
+        server.listen(sessionServerPort, onServerListening)
         destroyable(server)
     })
 
@@ -64,7 +87,7 @@ export function activate(context: vscode.ExtensionContext) {
         let fromRemote = false
         const editor = window.activeTextEditor
         if (typeof editor === 'undefined') {
-            console.log(`${msg}: no active editor`)
+            debug(`${msg}: no active editor`)
             return false
         }
 
@@ -73,16 +96,16 @@ export function activate(context: vscode.ExtensionContext) {
         const doc = sharedbConnection.get(collectionId, docId)
         doc.subscribe(err => {
             if (err) {
-                console.log(`error ${err}`)
+                debug(`error ${err}`)
                 return false
             }
 
             // does not exist so we create the document and replace the code editor content by the document content
             if (!doc.data) {
-                console.log(`${msg}: create doc`)
+                debug(`${msg}: create doc`)
                 doc.create(editor.document.getText())
             } else { // it exist, we set the code editor content to the latest document snapshot
-                console.log(`${msg}: edit doc`)
+                debug(`${msg}: edit doc`)
                 editor.edit(editBuilder => editBuilder.replace(new Position(0, 0), doc.data))
                 fromRemote = true
             }
@@ -101,20 +124,20 @@ export function activate(context: vscode.ExtensionContext) {
                             o = operation.o[j]
 
                             if (o.d) { // delete operation
-                                console.log(`${msg}: doc handler :: VSC delete Op for ${editor.document.fileName}`)
+                                debug(`${msg}: doc handler :: VSC delete Op for ${editor.document.fileName}`)
                                 // from = code_editor.posFromIndex(o.p);
                                 // to = code_editor.posFromIndex(o.p + o.d.length);
                                 // code_editor.replaceRange("", from, to, "remote");
                                 fromRemote = true
                             } else if (o.i) { // insert operation
-                                console.log(`${msg}: doc handler :: VSC insert Op for ${editor.document.fileName}`)
+                                debug(`${msg}: doc handler :: VSC insert Op for ${editor.document.fileName}`)
                                 const editPosition = editor.document.positionAt(o.p)
                                 editor.edit(editBuilder => editBuilder.insert(editPosition, o.i))
                                 fromRemote = true
                                 // from = code_editor.posFromIndex(o.p);
                                 // code_editor.replaceRange(o.i, from, from, "remote");
                             } else {
-                                console.log('Unknown type of operation.')
+                                debug('Unknown type of operation.')
                             }
                         }
                     }
@@ -128,16 +151,16 @@ export function activate(context: vscode.ExtensionContext) {
             if (!isSameDocument) return false
 
             const { text } =  evt.contentChanges[0]
-            console.log()
+            debug()
             const { start, end } = evt.contentChanges[0].range
             editor.document.offsetAt(start)
-            console.log(`${msg}: document changes:
+            debug(`${msg}: document changes:
                 ${start.line}:${start.character} -> ${end.line}:${end.character},
                 text: ${JSON.stringify(text.slice(0, 10))}`)
 
             const op = { p: [], t: 'text0', o: [] }
             if (!fromRemote && text !== '') {
-                console.log(`${msg}: evt handler :: submitOp`)
+                debug(`${msg}: evt handler :: submitOp`)
                 op.o.push({ p: editor.document.offsetAt(start), i: text })
                 doc.submitOp(op)
             }
@@ -166,11 +189,20 @@ export function activate(context: vscode.ExtensionContext) {
                 { id: sessionId, name: sessionName, startedAt: Date.now() },
                 null,
             )
-            console.log(`session: ${session.id}, ${session.name}`)
+            debug(`session: ${session.id}, ${session.name}`)
             sessions[session.id] = session
             vscode.window.showInformationMessage(
                 `Sharing session **${session.name}**, with ID ${session.id}, is now online`,
             )
+
+            const docsCount = propOr([], sessionId, sessionDocuments).length
+            if (!sharedDocsStatusBarItem) {
+                sharedDocsStatusBarItem =  window.createStatusBarItem(vscode.StatusBarAlignment.Left)
+                sharedDocsStatusBarItem.show()
+            }
+            sharedDocsStatusBarItem.text = `$(mirror) ${docsCount}`
+            sharedDocsStatusBarItem.tooltip = `Session ${session.name}: ${docsCount} shared documents`
+            sharedDocsStatusBarItem.command = 'extension.showSharedDocs'
         } catch (err) {
             vscode.window.showErrorMessage(`Cannot create sharing session. ${err}`)
         }
@@ -179,7 +211,7 @@ export function activate(context: vscode.ExtensionContext) {
     //
     // Share document action
     //
-    const disposableShareDoc =  vscode.commands.registerCommand('extension.shareDoc', async () => {
+    const disposableShareDoc =  vscode.commands.registerTextEditorCommand('extension.shareDoc', async () => {
         // only 1 session supported, i.e. the first in sessions object
         const sessionId = compose(head, keys)(sessions)
 
@@ -201,7 +233,12 @@ export function activate(context: vscode.ExtensionContext) {
         }
 
         vscode.window.showInformationMessage(`Sharing ${docId}`)
+        sessionDocuments[sessionId] = append(docId, sessionDocuments[sessionId])
         handleSharing(sessionId, docId, 'master')
+
+        const docsCount = propOr([], sessionId, sessionDocuments).length
+        sharedDocsStatusBarItem.text = `$(mirror) ${docsCount}`
+        sharedDocsStatusBarItem.tooltip = `Session ${sessions[sessionId].name}: ${docsCount} shared documents`
     })
 
     //
@@ -221,35 +258,17 @@ export function activate(context: vscode.ExtensionContext) {
                     sessions[id] = { id, name: trim(name), startedAt: Date.now() }
                 }
             }
+
+            // TODO: need to implement the shareddocs statusbar item func
         } catch (err) {
             vscode.window.showErrorMessage(`Cannot connect to sharing session. ${err}`)
          }
-        // const textEditor = window.activeTextEditor
-        // if (typeof textEditor === "undefined") {
-        //     console.log('no active editor');
-        //     return false
-        // }
-
-        // vscode.window.onDidChangeActiveTextEditor(() => {
-        //     console.log('active editor changed')
-        // })
-
-        // vscode.window.onDidChangeTextEditorSelection(()=> {
-        //     console.log('onDidChangeTextEditorSelectiona')
-        // })
-
-        // textEditor.edit(editBuilder => {
-        //     editBuilder.insert(new Position(0,0), 'New doc content')
-        // })
-        // .then(fullfilled => console.log('fulfilled'), rejected => console.log('rejected'))
-
-        // vscode.window.showInformationMessage('Connecting');
     })
 
     //
+    // Engage in a shared doc
     //
-    //
-    const disposableEngage = vscode.commands.registerCommand('extension.engageDoc', async () => {
+    const disposableEngage = vscode.commands.registerTextEditorCommand('extension.engageDoc', async () => {
         const sessionId = compose(head, keys)(sessions)
         try {
             const sharedDocs = await read(`http://${sessionServerUrl}/documents/${sessionId}`, null)
@@ -260,6 +279,8 @@ export function activate(context: vscode.ExtensionContext) {
 
             const docId = await window.showQuickPick(sharedDocs)
             handleSharing(sessionId, docId, 'slave')
+
+            // TODO: need to implement the shareddocs statusbar item func
         } catch (err) {
             window.showErrorMessage(`Cannot complete operation: ${err}`)
         }
@@ -268,12 +289,17 @@ export function activate(context: vscode.ExtensionContext) {
     //
     // Stop local share server
     //
-    const disposableStopServer = vscode.commands.registerCommand('extension.stopServer', () => {
-        server.destroy()
-        server = null
-        isServerRunning = false
-        sessions = empty(sessions)
-        sessionDocuments = empty(sessionDocuments)
+    const disposableStopServer = vscode.commands.registerCommand('extension.stopServer', async () => {
+        server.destroy(() => {
+            serverStatusBarItem.hide()
+            if (sharedDocsStatusBarItem) sharedDocsStatusBarItem.hide()
+            sharedDocsStatusBarItem = null
+            server = null
+            isServerRunning = false
+            sessions = empty(sessions)
+            sessionDocuments = empty(sessionDocuments)
+            debugServer('Http server has closed')
+        })
     })
 
     context.subscriptions.push(disposableStartServer,
@@ -282,5 +308,15 @@ export function activate(context: vscode.ExtensionContext) {
         disposableConnectSession,
         disposableEngage,
         disposableStopServer,
+        disposableShowStopServerCmd,
+        disposableShowSharedDocs,
     )
+}
+
+export function deactivate(context: vscode.ExtensionContext) {
+    return new Promise((resolve, reject) => {
+        serverStatusBarItem.dispose()
+        sharedDocsStatusBarItem.dispose()
+        server.destroy(() => resolve(0))
+    })
 }

@@ -1,5 +1,5 @@
 import * as vscode from 'vscode'
-import { StatusBarItem, window, commands } from 'vscode'
+import { window, commands, StatusBarItem, StatusBarAlignment } from 'vscode'
 
 import ShareDB = require('sharedb')
 import ShareDBClient = require('sharedb/lib/client')
@@ -73,7 +73,7 @@ export function activate(context: vscode.ExtensionContext) {
         wss.on('close', (ws, req) => debugServer(`ShareDB client disconnected`))
 
         const onServerListening = () => {
-            serverStatusBarItem = window.createStatusBarItem(vscode.StatusBarAlignment.Left)
+            serverStatusBarItem = window.createStatusBarItem(StatusBarAlignment.Left)
             serverStatusBarItem.text = '$(server)'
             serverStatusBarItem.tooltip = `PairProg: Server running at ${sessionServerUrl}`
             serverStatusBarItem.command = 'extension.showStopServerCmd'
@@ -113,29 +113,21 @@ export function activate(context: vscode.ExtensionContext) {
             // we listen to the "op" event which will fire when a change in content (an operation) is applied
             // to the document, "source" argument determinate the origin which can be local or remote (false)
             doc.on('op', (op, source) => {
-                let operation
-                let o
-
                 if (source === false) { // we integrate the operation if it come from the server
-                    for (let i = 0; i < op.length; i += 1) {
-                        operation = op[i]
+                    for (const i of op) {
+                        const operation = op[i]
 
-                        for (let j = 0; j < operation.o.length; j += 1) {
-                            o = operation.o[j]
+                        for (const j of operation.o) {
+                            const o = operation.o[j]
 
                             if (o.d) { // delete operation
                                 debug(`${msg}: doc handler :: VSC delete Op for ${editor.document.fileName}`)
-                                // from = code_editor.posFromIndex(o.p);
-                                // to = code_editor.posFromIndex(o.p + o.d.length);
-                                // code_editor.replaceRange("", from, to, "remote");
                                 fromRemote = true
                             } else if (o.i) { // insert operation
                                 debug(`${msg}: doc handler :: VSC insert Op for ${editor.document.fileName}`)
                                 const editPosition = editor.document.positionAt(o.p)
                                 editor.edit(editBuilder => editBuilder.insert(editPosition, o.i))
                                 fromRemote = true
-                                // from = code_editor.posFromIndex(o.p);
-                                // code_editor.replaceRange(o.i, from, from, "remote");
                             } else {
                                 debug('Unknown type of operation.')
                             }
@@ -146,24 +138,30 @@ export function activate(context: vscode.ExtensionContext) {
         })
 
         // handles local changes only
-        workspace.onDidChangeTextDocument(evt => {
+        workspace.onDidChangeTextDocument((evt: vscode.TextDocumentChangeEvent) => {
             const isSameDocument = editor.document.fileName === evt.document.fileName
             if (!isSameDocument) return false
 
             const { text } =  evt.contentChanges[0]
-            debug()
             const { start, end } = evt.contentChanges[0].range
-            editor.document.offsetAt(start)
             debug(`${msg}: document changes:
                 ${start.line}:${start.character} -> ${end.line}:${end.character},
                 text: ${JSON.stringify(text.slice(0, 10))}`)
 
             const op = { p: [], t: 'text0', o: [] }
+
+            // insert
             if (!fromRemote && text !== '') {
                 debug(`${msg}: evt handler :: submitOp`)
                 op.o.push({ p: editor.document.offsetAt(start), i: text })
                 doc.submitOp(op)
             }
+
+            // delete
+            if (!fromRemote && text === '') {
+                // TODO: need to get the deleted text. VSCode API doesn't support this. yet?
+            }
+
             fromRemote = false
         })
     }
@@ -173,7 +171,7 @@ export function activate(context: vscode.ExtensionContext) {
     //
     const disposableStartSession = vscode.commands.registerCommand('extension.startSession', async () => {
         if (compose(equals(1), length, keys())(sessions)) {
-            vscode.window.showErrorMessage(`Cannot start more than one sessions`)
+            window.showErrorMessage(`Cannot start more than one sessions`)
             return false
         }
         const sessionId = uuidv4().slice(0, 8)
@@ -191,20 +189,20 @@ export function activate(context: vscode.ExtensionContext) {
             )
             debug(`session: ${session.id}, ${session.name}`)
             sessions[session.id] = session
-            vscode.window.showInformationMessage(
+            window.showInformationMessage(
                 `Sharing session **${session.name}**, with ID ${session.id}, is now online`,
             )
 
             const docsCount = propOr([], sessionId, sessionDocuments).length
             if (!sharedDocsStatusBarItem) {
-                sharedDocsStatusBarItem =  window.createStatusBarItem(vscode.StatusBarAlignment.Left)
+                sharedDocsStatusBarItem =  window.createStatusBarItem(StatusBarAlignment.Left)
                 sharedDocsStatusBarItem.show()
             }
             sharedDocsStatusBarItem.text = `$(mirror) ${docsCount}`
             sharedDocsStatusBarItem.tooltip = `Session ${session.name}: ${docsCount} shared documents`
             sharedDocsStatusBarItem.command = 'extension.showSharedDocs'
         } catch (err) {
-            vscode.window.showErrorMessage(`Cannot create sharing session. ${err}`)
+            window.showErrorMessage(`Cannot create sharing session. ${err}`)
         }
     })
 
@@ -232,7 +230,7 @@ export function activate(context: vscode.ExtensionContext) {
             return false
         }
 
-        vscode.window.showInformationMessage(`Sharing ${docId}`)
+        window.showInformationMessage(`Sharing ${docId}`)
         sessionDocuments[sessionId] = append(docId, sessionDocuments[sessionId])
         handleSharing(sessionId, docId, 'master')
 
@@ -261,7 +259,7 @@ export function activate(context: vscode.ExtensionContext) {
 
             // TODO: need to implement the shareddocs statusbar item func
         } catch (err) {
-            vscode.window.showErrorMessage(`Cannot connect to sharing session. ${err}`)
+            window.showErrorMessage(`Cannot connect to sharing session. ${err}`)
          }
     })
 

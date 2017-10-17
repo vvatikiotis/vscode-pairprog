@@ -2,6 +2,17 @@
 
 This is the README for your extension "vscode-pairprog". After writing up a brief description, we recommend including the following sections.
 
+LATEST UPDATE: There are a couple of issues which prevent the completion of a first prototype.
+
+- There is no Cursors API in VSCode, so there is no visual feedback on the position
+of remote collaborators' cursors.
+- ShareDB works with [json0 OT Type](https://github.com/ottypes/json0) which supports
+insert and delete operations *on a string*. VSCode API provides the inserted text
+for the insert operation but not the deleted one for the delete operation. I've opened
+a couple of issues in github for these 2 issues and I'm waiting on their feedback.
+- [Cursors API issue](https://github.com/Microsoft/vscode/issues/36136)
+- [Deleted text API](https://github.com/Microsoft/vscode/issues/36361)
+
 ## Features
 
 Describe specific features of your extension including screenshots of your extension in action. Image paths are relative to this README file.
